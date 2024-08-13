@@ -21,7 +21,6 @@ import (
 	"github.com/smallstep/assert"
 	"github.com/smallstep/certificates/acme"
 	"github.com/smallstep/certificates/authority/admin"
-	"github.com/smallstep/certificates/authority/admin/db/nosql"
 	"github.com/smallstep/certificates/authority/provisioner"
 )
 
@@ -329,79 +328,6 @@ func TestHandler_loadProvisionerByName(t *testing.T) {
 
 			w := httptest.NewRecorder()
 			loadProvisionerByName(tc.next)(w, req)
-			res := w.Result()
-
-			assert.Equals(t, tc.statusCode, res.StatusCode)
-
-			body, err := io.ReadAll(res.Body)
-			res.Body.Close()
-			assert.FatalError(t, err)
-
-			if res.StatusCode >= 400 {
-				err := admin.Error{}
-				assert.FatalError(t, json.Unmarshal(bytes.TrimSpace(body), &err))
-
-				assert.Equals(t, tc.err.Type, err.Type)
-				assert.Equals(t, tc.err.Message, err.Message)
-				assert.Equals(t, tc.err.StatusCode(), res.StatusCode)
-				assert.Equals(t, tc.err.Detail, err.Detail)
-				assert.Equals(t, []string{"application/json"}, res.Header["Content-Type"])
-				return
-			}
-		})
-	}
-}
-
-func TestHandler_checkAction(t *testing.T) {
-	type test struct {
-		adminDB               admin.DB
-		next                  http.HandlerFunc
-		supportedInStandalone bool
-		err                   *admin.Error
-		statusCode            int
-	}
-	var tests = map[string]func(t *testing.T) test{
-		"standalone-nosql-supported": func(t *testing.T) test {
-			return test{
-				supportedInStandalone: true,
-				adminDB:               &nosql.DB{},
-				next: func(w http.ResponseWriter, r *http.Request) {
-					w.Write(nil) // mock response with status 200
-				},
-				statusCode: 200,
-			}
-		},
-		"standalone-nosql-not-supported": func(t *testing.T) test {
-			err := admin.NewError(admin.ErrorNotImplementedType, "operation not supported in standalone mode")
-			err.Message = "operation not supported in standalone mode"
-			return test{
-				supportedInStandalone: false,
-				adminDB:               &nosql.DB{},
-				statusCode:            501,
-				err:                   err,
-			}
-		},
-		"standalone-no-nosql-not-supported": func(t *testing.T) test {
-			err := admin.NewError(admin.ErrorNotImplementedType, "operation not supported")
-			err.Message = "operation not supported"
-			return test{
-				supportedInStandalone: false,
-				adminDB:               &admin.MockDB{},
-				next: func(w http.ResponseWriter, r *http.Request) {
-					w.Write(nil) // mock response with status 200
-				},
-				statusCode: 200,
-				err:        err,
-			}
-		},
-	}
-	for name, prep := range tests {
-		tc := prep(t)
-		t.Run(name, func(t *testing.T) {
-			ctx := admin.NewContext(context.Background(), tc.adminDB)
-			req := httptest.NewRequest("GET", "/foo", http.NoBody).WithContext(ctx)
-			w := httptest.NewRecorder()
-			checkAction(tc.next, tc.supportedInStandalone)(w, req)
 			res := w.Result()
 
 			assert.Equals(t, tc.statusCode, res.StatusCode)
