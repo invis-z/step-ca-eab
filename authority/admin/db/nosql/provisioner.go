@@ -25,6 +25,7 @@ type dbProvisioner struct {
 	CreatedAt    time.Time                 `json:"createdAt"`
 	DeletedAt    time.Time                 `json:"deletedAt"`
 	Webhooks     []dbWebhook               `json:"webhooks,omitempty"`
+	Policy       *dbPolicy                 `json:"policy,omitempty"`
 }
 
 type dbBasicAuth struct {
@@ -67,6 +68,7 @@ func (dbp *dbProvisioner) convert2linkedca() (*linkedca.Provisioner, error) {
 		CreatedAt:    timestamppb.New(dbp.CreatedAt),
 		DeletedAt:    timestamppb.New(dbp.DeletedAt),
 		Webhooks:     dbWebhooksToLinkedca(dbp.Webhooks),
+		Policy:       dbToLinked(dbp.Policy),
 	}, nil
 }
 
@@ -182,6 +184,7 @@ func (db *DB) CreateProvisioner(ctx context.Context, prov *linkedca.Provisioner)
 		SSHTemplate:  prov.SshTemplate,
 		CreatedAt:    clock.Now(),
 		Webhooks:     linkedcaWebhooksToDB(prov.Webhooks),
+		Policy:       linkedToDB(prov.Policy),
 	}
 
 	if err := db.save(ctx, prov.Id, dbp, nil, "provisioner", provisionersTable); err != nil {
@@ -212,6 +215,7 @@ func (db *DB) UpdateProvisioner(ctx context.Context, prov *linkedca.Provisioner)
 	nu.X509Template = prov.X509Template
 	nu.SSHTemplate = prov.SshTemplate
 	nu.Webhooks = linkedcaWebhooksToDB(prov.Webhooks)
+	nu.Policy = linkedToDB(prov.Policy)
 
 	return db.save(ctx, prov.Id, nu, old, "provisioner", provisionersTable)
 }
