@@ -20,13 +20,14 @@ var externalAccountKeyMutex sync.RWMutex
 var referencesByProvisionerIndexMutex sync.Mutex
 
 type dbExternalAccountKey struct {
-	ID            string    `json:"id"`
-	ProvisionerID string    `json:"provisionerID"`
-	Reference     string    `json:"reference"`
-	AccountID     string    `json:"accountID,omitempty"`
-	HmacKey       []byte    `json:"key"`
-	CreatedAt     time.Time `json:"createdAt"`
-	BoundAt       time.Time `json:"boundAt"`
+	ID            string       `json:"id"`
+	ProvisionerID string       `json:"provisionerID"`
+	Reference     string       `json:"reference"`
+	AccountID     string       `json:"accountID,omitempty"`
+	HmacKey       []byte       `json:"key"`
+	CreatedAt     time.Time    `json:"createdAt"`
+	BoundAt       time.Time    `json:"boundAt"`
+	Policy        *acme.Policy `json:"policy,omitempty"`
 }
 
 type dbExternalAccountKeyReference struct {
@@ -102,6 +103,7 @@ func (db *DB) CreateExternalAccountKey(ctx context.Context, provisionerID, refer
 		HmacKey:       dbeak.HmacKey,
 		CreatedAt:     dbeak.CreatedAt,
 		BoundAt:       dbeak.BoundAt,
+		Policy:        dbeak.Policy,
 	}, nil
 }
 
@@ -127,6 +129,7 @@ func (db *DB) GetExternalAccountKey(ctx context.Context, provisionerID, keyID st
 		HmacKey:       dbeak.HmacKey,
 		CreatedAt:     dbeak.CreatedAt,
 		BoundAt:       dbeak.BoundAt,
+		Policy:        dbeak.Policy,
 	}, nil
 }
 
@@ -199,6 +202,7 @@ func (db *DB) GetExternalAccountKeys(ctx context.Context, provisionerID, cursor 
 			AccountID:     eak.AccountID,
 			CreatedAt:     eak.CreatedAt,
 			BoundAt:       eak.BoundAt,
+			Policy:        eak.Policy,
 		})
 	}
 
@@ -229,9 +233,12 @@ func (db *DB) GetExternalAccountKeyByReference(ctx context.Context, provisionerI
 	return db.GetExternalAccountKey(ctx, provisionerID, dbExternalAccountKeyReference.ExternalAccountKeyID)
 }
 
-func (db *DB) GetExternalAccountKeyByAccountID(context.Context, string, string) (*acme.ExternalAccountKey, error) {
-	//nolint:nilnil // legacy
-	return nil, nil
+func (db *DB) GetExternalAccountKeyByAccountID(ctx context.Context, provisionerID, accountID string) (*acme.ExternalAccountKey, error) {
+	id, err := db.GetAccountExternalAccountKeyID(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return db.GetExternalAccountKey(ctx, provisionerID, id)
 }
 
 func (db *DB) UpdateExternalAccountKey(ctx context.Context, provisionerID string, eak *acme.ExternalAccountKey) error {
@@ -263,6 +270,14 @@ func (db *DB) UpdateExternalAccountKey(ctx context.Context, provisionerID string
 		HmacKey:       eak.HmacKey,
 		CreatedAt:     eak.CreatedAt,
 		BoundAt:       eak.BoundAt,
+		Policy:        eak.Policy,
+	}
+
+	if eak.AccountID != "" {
+		accerr := db.UpdateAccountAfterBind(ctx, eak.AccountID, eak.ID)
+		if accerr != nil {
+			return accerr
+		}
 	}
 
 	return db.save(ctx, nu.ID, nu, old, "external_account_key", externalAccountKeyTable)
@@ -349,8 +364,15 @@ func (db *DB) deleteEAKID(ctx context.Context, provisionerID, eakID string) erro
 		_old = nil
 	}
 
-	if err = db.save(ctx, provisionerID, _new, _old, "externalAccountKeyIDsByProvisionerID", externalAccountKeyIDsByProvisionerIDTable); err != nil {
-		return errors.Wrapf(err, "error saving eakIDs index for provisioner %s", provisionerID)
+	if len(newEAKIDs) == 0 {
+		// remove the whole thing if it is empty
+		if err := db.db.Del(externalAccountKeyIDsByProvisionerIDTable, []byte(provisionerID)); err != nil {
+			return errors.Wrapf(err, "error deleting empty EAKID list for provisioner: %s", provisionerID)
+		}
+	} else {
+		if err = db.save(ctx, provisionerID, _new, _old, "externalAccountKeyIDsByProvisionerID", externalAccountKeyIDsByProvisionerIDTable); err != nil {
+			return errors.Wrapf(err, "error saving eakIDs index for provisioner %s", provisionerID)
+		}
 	}
 
 	return nil

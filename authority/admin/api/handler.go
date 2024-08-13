@@ -49,28 +49,20 @@ func Route(r api.Router, options ...RouterOption) {
 		return extractAuthorizeTokenAdmin(requireAPIEnabled(next))
 	}
 
-	enabledInStandalone := func(next http.HandlerFunc) http.HandlerFunc {
-		return checkAction(next, true)
-	}
-
-	disabledInStandalone := func(next http.HandlerFunc) http.HandlerFunc {
-		return checkAction(next, false)
-	}
-
 	acmeEABMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
 		return authnz(loadProvisionerByName(requireEABEnabled(next)))
 	}
 
 	authorityPolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
-		return authnz(enabledInStandalone(next))
+		return authnz(next)
 	}
 
 	provisionerPolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
-		return authnz(disabledInStandalone(loadProvisionerByName(next)))
+		return authnz(loadProvisionerByName(next))
 	}
 
 	acmePolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
-		return authnz(disabledInStandalone(loadProvisionerByName(requireEABEnabled(loadExternalAccountKey(next)))))
+		return authnz(loadProvisionerByName(requireEABEnabled(loadExternalAccountKey(next))))
 	}
 
 	webhookMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
