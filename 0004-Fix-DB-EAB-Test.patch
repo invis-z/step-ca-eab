@@ -1,0 +1,41 @@
+From 6291eac4cc2e311c51d98d36f0ee33f059a354d7 Mon Sep 17 00:00:00 2001
+From: invis-z <22781620+invis-z@users.noreply.github.com>
+Date: Tue, 13 Aug 2024 15:33:36 +0000
+Subject: [PATCH 4/4] Fix DB EAB Test
+
+---
+ acme/db/nosql/eab_test.go | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/acme/db/nosql/eab_test.go b/acme/db/nosql/eab_test.go
+index 51097911..dd2c8a22 100644
+--- a/acme/db/nosql/eab_test.go
++++ b/acme/db/nosql/eab_test.go
+@@ -667,6 +667,9 @@ func TestDB_DeleteExternalAccountKey(t *testing.T) {
+ 						case string(externalAccountKeyTable):
+ 							assert.Equals(t, string(key), keyID)
+ 							return nil
++						case string(externalAccountKeyIDsByProvisionerIDTable):
++							assert.Equals(t, string(key), provID)
++							return nil
+ 						default:
+ 							assert.FatalError(t, errors.Errorf("unexpected bucket %s", string(bucket)))
+ 							return errors.New("force default")
+@@ -1104,8 +1107,12 @@ func TestDB_UpdateExternalAccountKey(t *testing.T) {
+ 				eak: eak,
+ 				db: &certdb.MockNoSQLDB{
+ 					MGet: func(bucket, key []byte) ([]byte, error) {
+-						assert.Equals(t, bucket, externalAccountKeyTable)
+-						assert.Equals(t, string(key), keyID)
++						switch string(bucket) {
++						case string(externalAccountKeyTable):
++							assert.Equals(t, string(key), keyID)
++						case string(accountTable):
++							assert.Equals(t, string(key), "")
++						}
+ 
+ 						return b, nil
+ 					},
+-- 
+2.45.2
+

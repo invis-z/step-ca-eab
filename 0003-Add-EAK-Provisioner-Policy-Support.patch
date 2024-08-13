@@ -1,0 +1,385 @@
+From a0c32bf21e2af5e5d34ede16b5296d4b2726559d Mon Sep 17 00:00:00 2001
+From: invis-z <22781620+invis-z@users.noreply.github.com>
+Date: Tue, 13 Aug 2024 13:48:14 +0000
+Subject: [PATCH 3/4] Add EAK & Provisioner Policy Support
+
+---
+ acme/db/nosql/account.go                | 42 +++++++++++---
+ acme/db/nosql/eab.go                    | 46 +++++++++++----
+ authority/admin/api/handler.go          | 14 +----
+ authority/admin/api/middleware.go       | 23 --------
+ authority/admin/api/middleware_test.go  | 74 -------------------------
+ authority/admin/db/nosql/provisioner.go |  4 ++
+ 6 files changed, 74 insertions(+), 129 deletions(-)
+
+diff --git a/acme/db/nosql/account.go b/acme/db/nosql/account.go
+index 9b03db81..b14471bb 100644
+--- a/acme/db/nosql/account.go
++++ b/acme/db/nosql/account.go
+@@ -13,15 +13,16 @@ import (
+ 
+ // dbAccount represents an ACME account.
+ type dbAccount struct {
+-	ID              string           `json:"id"`
+-	Key             *jose.JSONWebKey `json:"key"`
+-	Contact         []string         `json:"contact,omitempty"`
+-	Status          acme.Status      `json:"status"`
+-	LocationPrefix  string           `json:"locationPrefix"`
+-	ProvisionerID   string           `json:"provisionerID,omitempty"`
+-	ProvisionerName string           `json:"provisionerName"`
+-	CreatedAt       time.Time        `json:"createdAt"`
+-	DeactivatedAt   time.Time        `json:"deactivatedAt"`
++	ID                   string           `json:"id"`
++	Key                  *jose.JSONWebKey `json:"key"`
++	Contact              []string         `json:"contact,omitempty"`
++	Status               acme.Status      `json:"status"`
++	LocationPrefix       string           `json:"locationPrefix"`
++	ProvisionerID        string           `json:"provisionerID,omitempty"`
++	ProvisionerName      string           `json:"provisionerName"`
++	CreatedAt            time.Time        `json:"createdAt"`
++	DeactivatedAt        time.Time        `json:"deactivatedAt"`
++	ExternalAccountKeyID string           `json:"externalAccountKeyID,omitempty"`
+ }
+ 
+ func (dba *dbAccount) clone() *dbAccount {
+@@ -84,6 +85,16 @@ func (db *DB) GetAccountByKeyID(ctx context.Context, kid string) (*acme.Account,
+ 	return db.GetAccount(ctx, id)
+ }
+ 
++// GetAccountExternalAccountKeyID retrieves the External Account Key ID linked to the ACME account.
++func (db *DB) GetAccountExternalAccountKeyID(ctx context.Context, id string) (string, error) {
++	dbacc, err := db.getDBAccount(ctx, id)
++	if err != nil {
++		return "", err
++	}
++
++	return dbacc.ExternalAccountKeyID, nil
++}
++
+ // CreateAccount imlements the AcmeDB.CreateAccount interface.
+ func (db *DB) CreateAccount(ctx context.Context, acc *acme.Account) error {
+ 	var err error
+@@ -143,3 +154,16 @@ func (db *DB) UpdateAccount(ctx context.Context, acc *acme.Account) error {
+ 
+ 	return db.save(ctx, old.ID, nu, old, "account", accountTable)
+ }
++
++// UpdateAccount imlements the AcmeDB.UpdateAccount interface.
++func (db *DB) UpdateAccountAfterBind(ctx context.Context, id, eakID string) error {
++	old, err := db.getDBAccount(ctx, id)
++	if err != nil {
++		return err
++	}
++
++	nu := old.clone()
++	nu.ExternalAccountKeyID = eakID
++
++	return db.save(ctx, old.ID, nu, old, "account", accountTable)
++}
+diff --git a/acme/db/nosql/eab.go b/acme/db/nosql/eab.go
+index e2a437dd..a3403482 100644
+--- a/acme/db/nosql/eab.go
++++ b/acme/db/nosql/eab.go
+@@ -20,13 +20,14 @@ var externalAccountKeyMutex sync.RWMutex
+ var referencesByProvisionerIndexMutex sync.Mutex
+ 
+ type dbExternalAccountKey struct {
+-	ID            string    `json:"id"`
+-	ProvisionerID string    `json:"provisionerID"`
+-	Reference     string    `json:"reference"`
+-	AccountID     string    `json:"accountID,omitempty"`
+-	HmacKey       []byte    `json:"key"`
+-	CreatedAt     time.Time `json:"createdAt"`
+-	BoundAt       time.Time `json:"boundAt"`
++	ID            string       `json:"id"`
++	ProvisionerID string       `json:"provisionerID"`
++	Reference     string       `json:"reference"`
++	AccountID     string       `json:"accountID,omitempty"`
++	HmacKey       []byte       `json:"key"`
++	CreatedAt     time.Time    `json:"createdAt"`
++	BoundAt       time.Time    `json:"boundAt"`
++	Policy        *acme.Policy `json:"policy,omitempty"`
+ }
+ 
+ type dbExternalAccountKeyReference struct {
+@@ -102,6 +103,7 @@ func (db *DB) CreateExternalAccountKey(ctx context.Context, provisionerID, refer
+ 		HmacKey:       dbeak.HmacKey,
+ 		CreatedAt:     dbeak.CreatedAt,
+ 		BoundAt:       dbeak.BoundAt,
++		Policy:        dbeak.Policy,
+ 	}, nil
+ }
+ 
+@@ -127,6 +129,7 @@ func (db *DB) GetExternalAccountKey(ctx context.Context, provisionerID, keyID st
+ 		HmacKey:       dbeak.HmacKey,
+ 		CreatedAt:     dbeak.CreatedAt,
+ 		BoundAt:       dbeak.BoundAt,
++		Policy:        dbeak.Policy,
+ 	}, nil
+ }
+ 
+@@ -199,6 +202,7 @@ func (db *DB) GetExternalAccountKeys(ctx context.Context, provisionerID, cursor
+ 			AccountID:     eak.AccountID,
+ 			CreatedAt:     eak.CreatedAt,
+ 			BoundAt:       eak.BoundAt,
++			Policy:        eak.Policy,
+ 		})
+ 	}
+ 
+@@ -229,9 +233,12 @@ func (db *DB) GetExternalAccountKeyByReference(ctx context.Context, provisionerI
+ 	return db.GetExternalAccountKey(ctx, provisionerID, dbExternalAccountKeyReference.ExternalAccountKeyID)
+ }
+ 
+-func (db *DB) GetExternalAccountKeyByAccountID(context.Context, string, string) (*acme.ExternalAccountKey, error) {
+-	//nolint:nilnil // legacy
+-	return nil, nil
++func (db *DB) GetExternalAccountKeyByAccountID(ctx context.Context, provisionerID, accountID string) (*acme.ExternalAccountKey, error) {
++	id, err := db.GetAccountExternalAccountKeyID(ctx, accountID)
++	if err != nil {
++		return nil, err
++	}
++	return db.GetExternalAccountKey(ctx, provisionerID, id)
+ }
+ 
+ func (db *DB) UpdateExternalAccountKey(ctx context.Context, provisionerID string, eak *acme.ExternalAccountKey) error {
+@@ -263,6 +270,14 @@ func (db *DB) UpdateExternalAccountKey(ctx context.Context, provisionerID string
+ 		HmacKey:       eak.HmacKey,
+ 		CreatedAt:     eak.CreatedAt,
+ 		BoundAt:       eak.BoundAt,
++		Policy:        eak.Policy,
++	}
++
++	if eak.AccountID != "" {
++		accerr := db.UpdateAccountAfterBind(ctx, eak.AccountID, eak.ID)
++		if accerr != nil {
++			return accerr
++		}
+ 	}
+ 
+ 	return db.save(ctx, nu.ID, nu, old, "external_account_key", externalAccountKeyTable)
+@@ -349,8 +364,15 @@ func (db *DB) deleteEAKID(ctx context.Context, provisionerID, eakID string) erro
+ 		_old = nil
+ 	}
+ 
+-	if err = db.save(ctx, provisionerID, _new, _old, "externalAccountKeyIDsByProvisionerID", externalAccountKeyIDsByProvisionerIDTable); err != nil {
+-		return errors.Wrapf(err, "error saving eakIDs index for provisioner %s", provisionerID)
++	if len(newEAKIDs) == 0 {
++		// remove the whole thing if it is empty
++		if err := db.db.Del(externalAccountKeyIDsByProvisionerIDTable, []byte(provisionerID)); err != nil {
++			return errors.Wrapf(err, "error deleting empty EAKID list for provisioner: %s", provisionerID)
++		}
++	} else {
++		if err = db.save(ctx, provisionerID, _new, _old, "externalAccountKeyIDsByProvisionerID", externalAccountKeyIDsByProvisionerIDTable); err != nil {
++			return errors.Wrapf(err, "error saving eakIDs index for provisioner %s", provisionerID)
++		}
+ 	}
+ 
+ 	return nil
+diff --git a/authority/admin/api/handler.go b/authority/admin/api/handler.go
+index a4faf936..65cb4843 100644
+--- a/authority/admin/api/handler.go
++++ b/authority/admin/api/handler.go
+@@ -49,28 +49,20 @@ func Route(r api.Router, options ...RouterOption) {
+ 		return extractAuthorizeTokenAdmin(requireAPIEnabled(next))
+ 	}
+ 
+-	enabledInStandalone := func(next http.HandlerFunc) http.HandlerFunc {
+-		return checkAction(next, true)
+-	}
+-
+-	disabledInStandalone := func(next http.HandlerFunc) http.HandlerFunc {
+-		return checkAction(next, false)
+-	}
+-
+ 	acmeEABMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+ 		return authnz(loadProvisionerByName(requireEABEnabled(next)))
+ 	}
+ 
+ 	authorityPolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+-		return authnz(enabledInStandalone(next))
++		return authnz(next)
+ 	}
+ 
+ 	provisionerPolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+-		return authnz(disabledInStandalone(loadProvisionerByName(next)))
++		return authnz(loadProvisionerByName(next))
+ 	}
+ 
+ 	acmePolicyMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+-		return authnz(disabledInStandalone(loadProvisionerByName(requireEABEnabled(loadExternalAccountKey(next)))))
++		return authnz(loadProvisionerByName(requireEABEnabled(loadExternalAccountKey(next))))
+ 	}
+ 
+ 	webhookMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+diff --git a/authority/admin/api/middleware.go b/authority/admin/api/middleware.go
+index 68006b7f..77944a61 100644
+--- a/authority/admin/api/middleware.go
++++ b/authority/admin/api/middleware.go
+@@ -10,7 +10,6 @@ import (
+ 	"github.com/smallstep/certificates/acme"
+ 	"github.com/smallstep/certificates/api/render"
+ 	"github.com/smallstep/certificates/authority/admin"
+-	"github.com/smallstep/certificates/authority/admin/db/nosql"
+ 	"github.com/smallstep/certificates/authority/provisioner"
+ )
+ 
+@@ -79,28 +78,6 @@ func loadProvisionerByName(next http.HandlerFunc) http.HandlerFunc {
+ 	}
+ }
+ 
+-// checkAction checks if an action is supported in standalone or not
+-func checkAction(next http.HandlerFunc, supportedInStandalone bool) http.HandlerFunc {
+-	return func(w http.ResponseWriter, r *http.Request) {
+-		// actions allowed in standalone mode are always supported
+-		if supportedInStandalone {
+-			next(w, r)
+-			return
+-		}
+-
+-		// when an action is not supported in standalone mode and when
+-		// using a nosql.DB backend, actions are not supported
+-		if _, ok := admin.MustFromContext(r.Context()).(*nosql.DB); ok {
+-			render.Error(w, r, admin.NewError(admin.ErrorNotImplementedType,
+-				"operation not supported in standalone mode"))
+-			return
+-		}
+-
+-		// continue to next http handler
+-		next(w, r)
+-	}
+-}
+-
+ // loadExternalAccountKey is a middleware that searches for an ACME
+ // External Account Key by reference or keyID and stores it in the context.
+ func loadExternalAccountKey(next http.HandlerFunc) http.HandlerFunc {
+diff --git a/authority/admin/api/middleware_test.go b/authority/admin/api/middleware_test.go
+index d166865f..52777c04 100644
+--- a/authority/admin/api/middleware_test.go
++++ b/authority/admin/api/middleware_test.go
+@@ -21,7 +21,6 @@ import (
+ 	"github.com/smallstep/assert"
+ 	"github.com/smallstep/certificates/acme"
+ 	"github.com/smallstep/certificates/authority/admin"
+-	"github.com/smallstep/certificates/authority/admin/db/nosql"
+ 	"github.com/smallstep/certificates/authority/provisioner"
+ )
+ 
+@@ -352,79 +351,6 @@ func TestHandler_loadProvisionerByName(t *testing.T) {
+ 	}
+ }
+ 
+-func TestHandler_checkAction(t *testing.T) {
+-	type test struct {
+-		adminDB               admin.DB
+-		next                  http.HandlerFunc
+-		supportedInStandalone bool
+-		err                   *admin.Error
+-		statusCode            int
+-	}
+-	var tests = map[string]func(t *testing.T) test{
+-		"standalone-nosql-supported": func(t *testing.T) test {
+-			return test{
+-				supportedInStandalone: true,
+-				adminDB:               &nosql.DB{},
+-				next: func(w http.ResponseWriter, r *http.Request) {
+-					w.Write(nil) // mock response with status 200
+-				},
+-				statusCode: 200,
+-			}
+-		},
+-		"standalone-nosql-not-supported": func(t *testing.T) test {
+-			err := admin.NewError(admin.ErrorNotImplementedType, "operation not supported in standalone mode")
+-			err.Message = "operation not supported in standalone mode"
+-			return test{
+-				supportedInStandalone: false,
+-				adminDB:               &nosql.DB{},
+-				statusCode:            501,
+-				err:                   err,
+-			}
+-		},
+-		"standalone-no-nosql-not-supported": func(t *testing.T) test {
+-			err := admin.NewError(admin.ErrorNotImplementedType, "operation not supported")
+-			err.Message = "operation not supported"
+-			return test{
+-				supportedInStandalone: false,
+-				adminDB:               &admin.MockDB{},
+-				next: func(w http.ResponseWriter, r *http.Request) {
+-					w.Write(nil) // mock response with status 200
+-				},
+-				statusCode: 200,
+-				err:        err,
+-			}
+-		},
+-	}
+-	for name, prep := range tests {
+-		tc := prep(t)
+-		t.Run(name, func(t *testing.T) {
+-			ctx := admin.NewContext(context.Background(), tc.adminDB)
+-			req := httptest.NewRequest("GET", "/foo", http.NoBody).WithContext(ctx)
+-			w := httptest.NewRecorder()
+-			checkAction(tc.next, tc.supportedInStandalone)(w, req)
+-			res := w.Result()
+-
+-			assert.Equals(t, tc.statusCode, res.StatusCode)
+-
+-			body, err := io.ReadAll(res.Body)
+-			res.Body.Close()
+-			assert.FatalError(t, err)
+-
+-			if res.StatusCode >= 400 {
+-				err := admin.Error{}
+-				assert.FatalError(t, json.Unmarshal(bytes.TrimSpace(body), &err))
+-
+-				assert.Equals(t, tc.err.Type, err.Type)
+-				assert.Equals(t, tc.err.Message, err.Message)
+-				assert.Equals(t, tc.err.StatusCode(), res.StatusCode)
+-				assert.Equals(t, tc.err.Detail, err.Detail)
+-				assert.Equals(t, []string{"application/json"}, res.Header["Content-Type"])
+-				return
+-			}
+-		})
+-	}
+-}
+-
+ func TestHandler_loadExternalAccountKey(t *testing.T) {
+ 	type test struct {
+ 		ctx        context.Context
+diff --git a/authority/admin/db/nosql/provisioner.go b/authority/admin/db/nosql/provisioner.go
+index 05b077f3..0c49ab06 100644
+--- a/authority/admin/db/nosql/provisioner.go
++++ b/authority/admin/db/nosql/provisioner.go
+@@ -25,6 +25,7 @@ type dbProvisioner struct {
+ 	CreatedAt    time.Time                 `json:"createdAt"`
+ 	DeletedAt    time.Time                 `json:"deletedAt"`
+ 	Webhooks     []dbWebhook               `json:"webhooks,omitempty"`
++	Policy       *dbPolicy                 `json:"policy,omitempty"`
+ }
+ 
+ type dbBasicAuth struct {
+@@ -67,6 +68,7 @@ func (dbp *dbProvisioner) convert2linkedca() (*linkedca.Provisioner, error) {
+ 		CreatedAt:    timestamppb.New(dbp.CreatedAt),
+ 		DeletedAt:    timestamppb.New(dbp.DeletedAt),
+ 		Webhooks:     dbWebhooksToLinkedca(dbp.Webhooks),
++		Policy:       dbToLinked(dbp.Policy),
+ 	}, nil
+ }
+ 
+@@ -182,6 +184,7 @@ func (db *DB) CreateProvisioner(ctx context.Context, prov *linkedca.Provisioner)
+ 		SSHTemplate:  prov.SshTemplate,
+ 		CreatedAt:    clock.Now(),
+ 		Webhooks:     linkedcaWebhooksToDB(prov.Webhooks),
++		Policy:       linkedToDB(prov.Policy),
+ 	}
+ 
+ 	if err := db.save(ctx, prov.Id, dbp, nil, "provisioner", provisionersTable); err != nil {
+@@ -212,6 +215,7 @@ func (db *DB) UpdateProvisioner(ctx context.Context, prov *linkedca.Provisioner)
+ 	nu.X509Template = prov.X509Template
+ 	nu.SSHTemplate = prov.SshTemplate
+ 	nu.Webhooks = linkedcaWebhooksToDB(prov.Webhooks)
++	nu.Policy = linkedToDB(prov.Policy)
+ 
+ 	return db.save(ctx, prov.Id, nu, old, "provisioner", provisionersTable)
+ }
+-- 
+2.45.2
+
