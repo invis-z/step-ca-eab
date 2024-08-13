@@ -1,0 +1,116 @@
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      goprivate:
+        required: false
+        type: string
+        default: go.step.sm,github.com/smallstep
+      gotestsum-version:
+        required: false
+        type: string
+        default: '1.11.0'
+      only-latest-golang:
+        required: false
+        type: boolean
+        default: true
+      os-dependencies:
+        required: false
+        type: string
+      test-command:
+        required: false
+        type: string
+        default: 'gotestsum -- -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: false
+      PAT:
+        required: false
+
+jobs:
+  set-go-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-output.outputs.matrix }}
+    steps:
+      -
+        name: Set go-matrix latest version
+        id: set-matrix-latest
+        if: inputs.only-latest-golang
+        run: |
+          echo 'matrix={"include":[{"go":"\"stable\""}]}' >> "${GITHUB_ENV}"
+      -
+        name: Set default go-matrix
+        id: set-matrix-default
+        if: inputs.only-latest-golang == false
+        run: |
+          echo 'matrix={"include":[{"go":"\"stable\""},{"go":"\"oldstable\""}]}' >> "${GITHUB_ENV}"
+      -
+        id: set-output
+        run: |
+          echo "matrix=${{ env.matrix }}" >> "${GITHUB_OUTPUT}"
+
+  test:
+    needs: set-go-matrix
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: ${{ inputs.goprivate }}
+    strategy:
+      matrix: ${{ fromJson(needs.set-go-matrix.outputs.matrix) }}
+    steps:
+      -
+        name: Install Dependencies
+        if: inputs.os-dependencies != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install ${{ inputs.os-dependencies }}
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      -
+        name: Reconfigure for Git go.step.sm
+        env:
+          PAT: ${{ secrets.PAT }}
+        if: env.PAT != ''
+        run: |
+          git config --global url.https://${{ secrets.PAT }}@github.com/.insteadOf git+ssh://git@github.com
+          git config --global url.git@github.com:.insteadOf https://github.com/
+      -
+        name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+          cache: true
+      -
+        name: Setup SSH key for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        if: env.SSH_PRIVATE_KEY != ''
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+      -
+        name: Install gotestsum
+        run: |
+          go install gotest.tools/gotestsum@v${{ inputs.gotestsum-version }}
+
+      -
+        name: Run Test Suite
+        run: ${{ inputs.test-command }}
+        env:
+          GOTESTSUM_JSONFILE: gotestsum.json
+          GOEXPERIMENT: nocoverageredesign
+      -
+        name: Annotate Test Suite Results
+        if: ${{ (success() || failure()) && hashFiles('gotestsum.json') != '' }}
+        uses: guyarb/golang-test-annotations@v0.8.0
+        with:
+          test-results: gotestsum.json

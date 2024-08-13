@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  workflow_dispatch:
+    inputs:
+        ref:
+            description: 'Ref to test'
+            required: true
+            type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: invis-z/step-ca-eab/.github/workflows/goCI.yaml@workflows
+    with:
+      only-latest-golang: false
+      os-dependencies: 'libpcsclite-dev'
+      test-command: 'V=1 make test'
+      ref: '${{ inputs.ref }}'
+    secrets: inherit

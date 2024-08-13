@@ -1,0 +1,157 @@
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      build-command:
+        required: false
+        type: string
+        default: 'V=1 make build'
+      golangci-lint-args:
+        required: false
+        type: string
+        default: '--timeout=30m'
+      goprivate:
+        required: false
+        type: string
+        default: go.step.sm,github.com/smallstep
+      only-latest-golang:
+        required: false
+        type: boolean
+        default: true
+      os-dependencies:
+        required: false
+        type: string
+      run-build:
+        required: false
+        type: boolean
+        default: true
+      run-govulncheck:
+        required: false
+        type: boolean
+        default: true
+      run-lint:
+        required: false
+        type: boolean
+        default: true
+      run-test:
+        required: false
+        type: boolean
+        default: true
+      test-command:
+        required: false
+        type: string
+        default: 'gotestsum -- -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: false
+      PAT:
+        required: false
+
+jobs:
+  lint:
+    if: inputs.run-lint
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: ${{ inputs.goprivate }}
+    steps:
+      - name: Install Dependencies # Some dependencies require this package
+        if: ${{ inputs.os-dependencies != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install ${{ inputs.os-dependencies }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache: true
+      - name: Configure Linter
+        if:  ${{ hashFiles('.golangci.yml', '.golangci.yaml', '.golangci.toml', '.golangci.json') == '' }}
+        run: |
+          curl -O https://raw.githubusercontent.com/smallstep/workflows/master/.golangci.yml
+      - name: Reconfigure Git for private repos
+        env:
+          PAT: ${{ secrets.PAT }}
+        if: ${{ env.PAT != '' }}
+        run: |
+          git config --global url.https://${{ secrets.PAT }}@github.com/.insteadOf git+ssh://git@github.com
+          git config --global url.git@github.com:.insteadOf https://github.com/
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.59.1
+          args: '${{ inputs.golangci-lint-args }}'
+          skip-cache: true
+
+  govulncheck:
+    if: inputs.run-govulncheck
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: ${{ inputs.goprivate }}
+    steps:
+      - name: Install Dependencies # Some dependencies require this package
+        if: ${{ inputs.os-dependencies != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install ${{ inputs.os-dependencies }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Reconfigure Git for private repos
+        env:
+          PAT: ${{ secrets.PAT }}
+        if: ${{ env.PAT != '' }}
+        run: |
+          git config --global url.https://${{ secrets.PAT }}@github.com/.insteadOf git+ssh://git@github.com
+          git config --global url.git@github.com:.insteadOf https://github.com/
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache: true
+      - name: Setup SSH key for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        if: ${{ env.SSH_PRIVATE_KEY != '' }}
+        with:
+          ssh-private-key: |
+            ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  test:
+    uses: invis-z/step-ca-eab/.github/workflows/goTest.yaml@workflows
+    if: inputs.run-test
+    with:
+      ref: ${{ inputs.ref }}
+      goprivate: ${{ inputs.goprivate }}
+      only-latest-golang: ${{ inputs.only-latest-golang }}
+      os-dependencies: ${{ inputs.os-dependencies }}
+      test-command: ${{ inputs.test-command }}
+    secrets: inherit
+
+  build:
+    uses: invis-z/step-ca-eab/.github/workflows/goBuild.yaml@workflows
+    if: inputs.run-build
+    with:
+      ref: ${{ inputs.ref }}
+      build-command: ${{ inputs.build-command }}
+      goprivate: ${{ inputs.goprivate }}
+      only-latest-golang: ${{ inputs.only-latest-golang }}
+      os-dependencies: ${{ inputs.os-dependencies }}
+    secrets: inherit
