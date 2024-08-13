@@ -13,15 +13,16 @@ import (
 
 // dbAccount represents an ACME account.
 type dbAccount struct {
-	ID              string           `json:"id"`
-	Key             *jose.JSONWebKey `json:"key"`
-	Contact         []string         `json:"contact,omitempty"`
-	Status          acme.Status      `json:"status"`
-	LocationPrefix  string           `json:"locationPrefix"`
-	ProvisionerID   string           `json:"provisionerID,omitempty"`
-	ProvisionerName string           `json:"provisionerName"`
-	CreatedAt       time.Time        `json:"createdAt"`
-	DeactivatedAt   time.Time        `json:"deactivatedAt"`
+	ID                   string           `json:"id"`
+	Key                  *jose.JSONWebKey `json:"key"`
+	Contact              []string         `json:"contact,omitempty"`
+	Status               acme.Status      `json:"status"`
+	LocationPrefix       string           `json:"locationPrefix"`
+	ProvisionerID        string           `json:"provisionerID,omitempty"`
+	ProvisionerName      string           `json:"provisionerName"`
+	CreatedAt            time.Time        `json:"createdAt"`
+	DeactivatedAt        time.Time        `json:"deactivatedAt"`
+	ExternalAccountKeyID string           `json:"externalAccountKeyID,omitempty"`
 }
 
 func (dba *dbAccount) clone() *dbAccount {
@@ -84,6 +85,16 @@ func (db *DB) GetAccountByKeyID(ctx context.Context, kid string) (*acme.Account,
 	return db.GetAccount(ctx, id)
 }
 
+// GetAccountExternalAccountKeyID retrieves the External Account Key ID linked to the ACME account.
+func (db *DB) GetAccountExternalAccountKeyID(ctx context.Context, id string) (string, error) {
+	dbacc, err := db.getDBAccount(ctx, id)
+	if err != nil {
+		return "", err
+	}
+
+	return dbacc.ExternalAccountKeyID, nil
+}
+
 // CreateAccount imlements the AcmeDB.CreateAccount interface.
 func (db *DB) CreateAccount(ctx context.Context, acc *acme.Account) error {
 	var err error
@@ -140,6 +151,19 @@ func (db *DB) UpdateAccount(ctx context.Context, acc *acme.Account) error {
 	if acc.Status == acme.StatusDeactivated && old.Status != acme.StatusDeactivated {
 		nu.DeactivatedAt = clock.Now()
 	}
+
+	return db.save(ctx, old.ID, nu, old, "account", accountTable)
+}
+
+// UpdateAccount imlements the AcmeDB.UpdateAccount interface.
+func (db *DB) UpdateAccountAfterBind(ctx context.Context, id, eakID string) error {
+	old, err := db.getDBAccount(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	nu := old.clone()
+	nu.ExternalAccountKeyID = eakID
 
 	return db.save(ctx, old.ID, nu, old, "account", accountTable)
 }
