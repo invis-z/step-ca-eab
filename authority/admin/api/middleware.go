@@ -10,7 +10,6 @@ import (
 	"github.com/smallstep/certificates/acme"
 	"github.com/smallstep/certificates/api/render"
 	"github.com/smallstep/certificates/authority/admin"
-	"github.com/smallstep/certificates/authority/admin/db/nosql"
 	"github.com/smallstep/certificates/authority/provisioner"
 )
 
@@ -76,28 +75,6 @@ func loadProvisionerByName(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = linkedca.NewContextWithProvisioner(ctx, prov)
 		next(w, r.WithContext(ctx))
-	}
-}
-
-// checkAction checks if an action is supported in standalone or not
-func checkAction(next http.HandlerFunc, supportedInStandalone bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// actions allowed in standalone mode are always supported
-		if supportedInStandalone {
-			next(w, r)
-			return
-		}
-
-		// when an action is not supported in standalone mode and when
-		// using a nosql.DB backend, actions are not supported
-		if _, ok := admin.MustFromContext(r.Context()).(*nosql.DB); ok {
-			render.Error(w, r, admin.NewError(admin.ErrorNotImplementedType,
-				"operation not supported in standalone mode"))
-			return
-		}
-
-		// continue to next http handler
-		next(w, r)
 	}
 }
 
