@@ -667,6 +667,9 @@ func TestDB_DeleteExternalAccountKey(t *testing.T) {
 						case string(externalAccountKeyTable):
 							assert.Equals(t, string(key), keyID)
 							return nil
+						case string(externalAccountKeyIDsByProvisionerIDTable):
+							assert.Equals(t, string(key), provID)
+							return nil
 						default:
 							assert.FatalError(t, errors.Errorf("unexpected bucket %s", string(bucket)))
 							return errors.New("force default")
@@ -1104,8 +1107,12 @@ func TestDB_UpdateExternalAccountKey(t *testing.T) {
 				eak: eak,
 				db: &certdb.MockNoSQLDB{
 					MGet: func(bucket, key []byte) ([]byte, error) {
-						assert.Equals(t, bucket, externalAccountKeyTable)
-						assert.Equals(t, string(key), keyID)
+						switch string(bucket) {
+						case string(externalAccountKeyTable):
+							assert.Equals(t, string(key), keyID)
+						case string(accountTable):
+							assert.Equals(t, string(key), "")
+						}
 
 						return b, nil
 					},
