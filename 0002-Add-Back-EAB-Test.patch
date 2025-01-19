@@ -1,4 +1,4 @@
-From b6861da87235d3f69905fa9e9380f271331a7d20 Mon Sep 17 00:00:00 2001
+From 9857c3e77c1e4e698d9cb41c99a659ee4f4c89b4 Mon Sep 17 00:00:00 2001
 From: invis-z <22781620+invis-z@users.noreply.github.com>
 Date: Tue, 30 Jul 2024 04:21:07 +0000
 Subject: [PATCH 2/4] Add Back EAB Test
@@ -8,7 +8,7 @@ Subject: [PATCH 2/4] Add Back EAB Test
  1 file changed, 583 insertions(+), 50 deletions(-)
 
 diff --git a/authority/admin/api/acme_test.go b/authority/admin/api/acme_test.go
-index 4c0af799..45a4954e 100644
+index 12ac52ec..ac59327f 100644
 --- a/authority/admin/api/acme_test.go
 +++ b/authority/admin/api/acme_test.go
 @@ -4,6 +4,7 @@ import (
